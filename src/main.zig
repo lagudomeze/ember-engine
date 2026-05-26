@@ -69,20 +69,26 @@ const GameState = struct {
     waiting_for_input: bool,
 
     fn init(allocator: std.mem.Allocator) !GameState {
+        std.debug.print("[init] 开始初始化游戏...\n", .{});
+
         // 创建渲染器
         const rend = try renderer.Renderer.init(allocator, "T-Engine Zig —— Tales of Maj'Eyal", 960, 640, 20);
 
         // 创建 ECS 世界
         var w = try ecs.World.init(allocator);
+        std.debug.print("[init] ECS 世界创建完成\n", .{});
 
         // 注册所有组件存储 —— 必须在创建实体之前完成
         try registerAllStorages(&w, allocator);
+        std.debug.print("[init] 组件存储注册完成 (9 种组件)\n", .{});
 
         // 创建地图
         var map = try world_mod.Map.init(allocator, 12345);
+        std.debug.print("[init] 地图创建完成 (seed=12345)\n", .{});
 
         // 创建初始玩家实体
         const player = try w.createEntity();
+        std.debug.print("[init] 玩家实体创建: id={d}.{d}\n", .{ player.index, player.generation });
 
         // 添加玩家位置
         try w.addComponent(player, firemage_plugin.Position, firemage_plugin.COMP_POSITION, .{
@@ -116,6 +122,16 @@ const GameState = struct {
         // 确保玩家周围区块加载，并在附近生成敌人
         _ = try map.ensureChunk(0, 0);
         try spawnEnemies(&w, &map, player, allocator);
+        std.debug.print("[init] 初始实体生成完成 (玩家 + 5 敌人)\n", .{});
+
+        // 验证关键数据
+        const pos_storage = w.typedStorage(firemage_plugin.Position, firemage_plugin.COMP_POSITION);
+        const health_storage = w.typedStorage(firemage_plugin.Health, firemage_plugin.COMP_HEALTH);
+        std.debug.print("[init] 位置组件实体数: {d}, 生命组件实体数: {d}\n", .{ pos_storage.count(), health_storage.count() });
+        if (w.getComponent(player, firemage_plugin.Position, firemage_plugin.COMP_POSITION)) |pp| {
+            std.debug.print("[init] 玩家位置: ({d}, {d})\n", .{ pp.x, pp.y });
+        }
+        std.debug.print("[init] 游戏初始化完成!\n\n", .{});
 
         return GameState{
             .allocator = allocator,
@@ -350,36 +366,15 @@ fn renderGame(state: *GameState) !void {
             const terrain = state.map.getTerrain(wx, wy) catch .void;
 
             switch (terrain) {
-                .wall => {
-                    state.renderer.drawTile(wx, wy, renderer.Color.dark_grey);
-                    state.renderer.drawChar(wx, wy, '#', renderer.Color.grey);
-                },
-                .floor => {
-                    state.renderer.drawTile(wx, wy, renderer.Color{ .r = 0.1, .g = 0.1, .b = 0.15, .a = 1.0 });
-                    state.renderer.drawChar(wx, wy, '.', renderer.Color.dark_grey);
-                },
-                .stairs_up => {
-                    state.renderer.drawChar(wx, wy, '<', renderer.Color.yellow);
-                },
-                .stairs_down => {
-                    state.renderer.drawChar(wx, wy, '>', renderer.Color.yellow);
-                },
-                .door_closed => {
-                    state.renderer.drawChar(wx, wy, '+', renderer.Color.orange);
-                },
-                .door_open => {
-                    state.renderer.drawChar(wx, wy, '\'', renderer.Color.orange);
-                },
-                .shallow_water => {
-                    state.renderer.drawTile(wx, wy, renderer.Color{ .r = 0.1, .g = 0.2, .b = 0.5, .a = 1.0 });
-                    state.renderer.drawChar(wx, wy, '~', renderer.Color.blue);
-                },
-                .deep_water => {
-                    state.renderer.drawTile(wx, wy, renderer.Color{ .r = 0.05, .g = 0.1, .b = 0.4, .a = 1.0 });
-                },
-                .void => {
-                    state.renderer.drawTile(wx, wy, renderer.Color.black);
-                },
+                .wall => state.renderer.drawTerrain(wx, wy, renderer.Color.dark_grey, '#', renderer.Color.grey),
+                .floor => state.renderer.drawTerrain(wx, wy, renderer.Color.dark_floor, '.', renderer.Color.dark_grey),
+                .stairs_up => state.renderer.drawTerrain(wx, wy, renderer.Color.dark_floor, '<', renderer.Color.yellow),
+                .stairs_down => state.renderer.drawTerrain(wx, wy, renderer.Color.dark_floor, '>', renderer.Color.yellow),
+                .door_closed => state.renderer.drawTerrain(wx, wy, renderer.Color.dark_floor, '+', renderer.Color.orange),
+                .door_open => state.renderer.drawTerrain(wx, wy, renderer.Color.dark_floor, '\'', renderer.Color.orange),
+                .shallow_water => state.renderer.drawTerrain(wx, wy, renderer.Color{ .r = 0.1, .g = 0.2, .b = 0.5 }, '~', renderer.Color.blue),
+                .deep_water => state.renderer.drawTerrain(wx, wy, renderer.Color{ .r = 0.05, .g = 0.1, .b = 0.4 }, '~', renderer.Color.blue),
+                .void => state.renderer.drawTerrain(wx, wy, renderer.Color.black, ' ', renderer.Color.black),
             }
         }
     }
@@ -398,7 +393,7 @@ fn renderGame(state: *GameState) !void {
         // 获取渲染组件
         if (state.world.getComponent(row.entity, firemage_plugin.Renderable, firemage_plugin.COMP_RENDERABLE)) |rend| {
             const color = renderer.Color{ .r = rend.fg_r, .g = rend.fg_g, .b = rend.fg_b, .a = 1.0 };
-            state.renderer.drawChar(wx, wy, rend.glyph, color);
+            state.renderer.drawEntity(wx, wy, color);
         }
     }
 
@@ -464,10 +459,12 @@ pub fn main() !void {
 
     // 主循环
     var running = true;
+    var last_debug_frame: u64 = 0;
     while (running) {
         // 1. 处理输入
         renderer.pollInput(&state.input);
         if (state.input.quit) {
+            std.debug.print("[loop] 收到退出信号，帧数={d}\n", .{state.renderer.frame_count});
             running = false;
             break;
         }
@@ -486,6 +483,19 @@ pub fn main() !void {
             // 处理待执行命令（销毁实体等）
             state.world.processCommands();
 
+            // 每 N 帧输出一次状态
+            if (state.renderer.frame_count - last_debug_frame >= 60) {
+                last_debug_frame = state.renderer.frame_count;
+                const pos = state.world.getComponent(state.player_entity, firemage_plugin.Position, firemage_plugin.COMP_POSITION);
+                const hp = state.world.getComponent(state.player_entity, firemage_plugin.Health, firemage_plugin.COMP_HEALTH);
+                if (pos != null and hp != null) {
+                    std.debug.print("[tick={d}] 玩家({d},{d}) HP={d}/{d} 实体数={d}\n", .{
+                        state.world.tick, pos.?.x, pos.?.y, hp.?.current, hp.?.max,
+                        state.world.typedStorage(firemage_plugin.Position, firemage_plugin.COMP_POSITION).count(),
+                    });
+                }
+            }
+
             // 检查玩家是否死亡
             if (state.world.getComponent(state.player_entity, firemage_plugin.Health, firemage_plugin.COMP_HEALTH)) |hp| {
                 if (hp.isDead()) {
@@ -501,6 +511,7 @@ pub fn main() !void {
         // 5. 帧率控制
         state.renderer.delayMs(16); // ~60 FPS
     }
+    std.debug.print("[loop] 游戏循环结束\n", .{});
 }
 
 // ============================================================================
