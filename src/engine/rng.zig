@@ -31,8 +31,10 @@ pub const RNG = struct {
     pub fn initMulti(seeds: []const u64) RNG {
         var combined: u64 = 0;
         for (seeds) |s| {
+            // 简单但有效的种子混合
             combined ^= s;
-            combined = std.hash.Wyhash.hash(0, std.mem.asBytes(&combined));
+            combined = combined *% 0x9E3779B97F4A7C15;
+            combined = std.math.rotl(u64,combined, @intCast(combined & 63));
         }
         return init(combined);
     }
@@ -44,7 +46,7 @@ pub const RNG = struct {
 
     /// 生成下一个 u64 随机数
     pub fn next(self: *RNG) u64 {
-        const result = std.math.rotl(self.s[1] *% 5, 7) *% 9;
+        const result = std.math.rotl(u64,self.s[1] *% 5, 7) *% 9;
         const t = self.s[1] << 17;
 
         self.s[2] ^= self.s[0];
@@ -53,7 +55,7 @@ pub const RNG = struct {
         self.s[0] ^= self.s[3];
 
         self.s[2] ^= t;
-        self.s[3] = std.math.rotl(self.s[3], 45);
+        self.s[3] = std.math.rotl(u64,self.s[3], 45);
 
         return result;
     }

@@ -11,7 +11,8 @@
 //!
 //! 控制说明：
 //! - 方向键 / WASD：移动
-//! - 数字键 1：施放火球术（向最后移动方向）
+//! - 数字键 1：施放火球术（投射物，向最后移动方向）
+//! - 数字键 2：烈焰风暴（天赋系统，3格外范围伤害）
 //! - ESC：退出游戏
 //!
 //! 显示说明：
@@ -27,12 +28,15 @@ const ecs = @import("engine/ecs.zig");
 const plugin = @import("engine/plugin_comptime.zig");
 const world_mod = @import("engine/world.zig");
 const renderer = @import("engine/renderer.zig");
+const rng_mod = @import("engine/rng.zig");
 
 // 导入编译时插件
 const firemage_plugin = @import("plugins/core_class_firemage.zig");
 const ai_plugin = @import("plugins/core_ai_hostile.zig");
 const stats_plugin = @import("plugins/core_stats.zig");
 const resources_plugin = @import("plugins/core_resources.zig");
+const talents_plugin = @import("plugins/core_talents.zig");
+const items_plugin = @import("plugins/core_items.zig");
 
 // ============================================================================
 // 编译期插件收集和系统表生成
@@ -44,6 +48,8 @@ const ALL_PLUGINS = .{
     ai_plugin,
     stats_plugin,
     resources_plugin,
+    talents_plugin,
+    items_plugin,
 };
 
 /// 编译期生成的系统调度表 —— 零运行时开销
@@ -71,6 +77,8 @@ const GameState = struct {
     log_messages: std.ArrayList([128]u8) = .empty,
     /// 是否在等待玩家输入（回合制模式）
     waiting_for_input: bool,
+    /// 随机数生成器（基于 tick 种子）
+    rng: rng_mod.RNG,
 
     fn init(allocator: std.mem.Allocator) !GameState {
         std.debug.print("[init] 开始初始化游戏...\n", .{});
@@ -136,11 +144,27 @@ const GameState = struct {
         try w.addComponent(player, stats_plugin.CombatStats, stats_plugin.COMP_COMBAT_STATS, .{});
 
         // 添加法力资源
-        try w.addComponent(player, resources_plugin.ResourcePool, resources_plugin.COMP_RESOURCE_POOL, resources_plugin.ResourcePool{
+        try w.addComponent(player, resources_plugin.ResourcePool, resources_plugin.COMP_RESOURCE_POOL, .{
             .kind = .mana,
             .current = 100,
             .max = 100,
         });
+
+        // 添加天赋系统
+        try w.addComponent(player, talents_plugin.TalentComponent, talents_plugin.COMP_TALENTS, .{});
+        try talents_plugin.learnTalent(&w, player, 0, 3); // 火球术 Lv3
+        try talents_plugin.learnTalent(&w, player, 3, 1); // 元素掌握 Lv1 (被动)
+
+        // 添加物品栏和装备
+        try w.addComponent(player, items_plugin.Inventory, items_plugin.COMP_INVENTORY, .{});
+        try w.addComponent(player, items_plugin.Equipment, items_plugin.COMP_EQUIPMENT, .{});
+
+        // 创建起始装备并直接装备
+        const starter_sword = try items_plugin.createSword(&w, "火焰之剑", 8);
+        try items_plugin.equipItem(&w, player, starter_sword);
+        const starter_armor = try items_plugin.createArmor(&w, "法师长袍", 6);
+        try items_plugin.equipItem(&w, player, starter_armor);
+        std.debug.print("[init] 起始装备已配备: 火焰之剑 + 法师长袍\n", .{});
 
         // 确保玩家周围区块加载，并在附近生成敌人
         _ = try map.ensureChunk(0, 0);
@@ -167,6 +191,7 @@ const GameState = struct {
             .last_dir_y = -1, // 默认向上
             .log_messages = .empty,
             .waiting_for_input = true,
+            .rng = rng_mod.RNG.init(12345),
         };
     }
 
@@ -270,7 +295,7 @@ fn handlePlayerInput(state: *GameState) !bool {
         }
     }
 
-    // 数字键 1：施放火球术
+    // 数字键 1：施放火球术（投射物模式）
     if (sc._1.isPressed(&state.input)) {
         if (state.last_dir_x == 0 and state.last_dir_y == 0) {
             state.log("请先移动以确定火球方向", .{});
@@ -288,6 +313,26 @@ fn handlePlayerInput(state: *GameState) !bool {
                 }
             };
             action_taken = true;
+        }
+    }
+
+    // 数字键 2：烈焰风暴（天赋系统，直接伤害）
+    if (sc._2.isPressed(&state.input)) {
+        if (state.last_dir_x == 0 and state.last_dir_y == 0) {
+            state.log("请先移动以确定方向", .{});
+        } else {
+            // 获取玩家位置和目标位置
+            if (state.world.getComponent(state.player_entity, firemage_plugin.Position, firemage_plugin.COMP_POSITION)) |pp| {
+                const tx = pp.x + state.last_dir_x * 3;
+                const ty = pp.y + state.last_dir_y * 3;
+                const used = talents_plugin.useTalent(&state.world, state.player_entity, 1, tx, ty, &state.rng) catch false;
+                if (used) {
+                    state.log("施放烈焰风暴！", .{});
+                } else {
+                    state.log("无法施放烈焰风暴（冷却中或法力不足）", .{});
+                }
+                action_taken = true;
+            }
         }
     }
 
@@ -451,7 +496,7 @@ fn renderUI(state: *GameState) void {
     }
 
     // 控制提示
-    r.drawText(10, 640, "WASD/方向键: 移动 | 1: 火球术 | 5/空格: 等待 | ESC: 退出", renderer.Color{ .r = 0.5, .g = 0.5, .b = 0.5 });
+    r.drawText(10, 640, "WASD/方向键: 移动 | 1: 火球术 | 2: 烈焰风暴 | 5/空格: 等待 | ESC: 退出", renderer.Color{ .r = 0.5, .g = 0.5, .b = 0.5 });
 }
 
 // ============================================================================
@@ -619,5 +664,27 @@ fn registerAllStorages(world: *ecs.World, allocator: std.mem.Allocator) !void {
         const storage = try allocator.create(ecs.ComponentStorage(resources_plugin.ResourcePool));
         storage.* = try ecs.ComponentStorage(resources_plugin.ResourcePool).init(allocator);
         try world.registerStorage(resources_plugin.ResourcePool, resources_plugin.COMP_RESOURCE_POOL, storage);
+    }
+    // 天赋系统
+    {
+        const storage = try allocator.create(ecs.ComponentStorage(talents_plugin.TalentComponent));
+        storage.* = try ecs.ComponentStorage(talents_plugin.TalentComponent).init(allocator);
+        try world.registerStorage(talents_plugin.TalentComponent, talents_plugin.COMP_TALENTS, storage);
+    }
+    // 物品装备系统
+    {
+        const storage = try allocator.create(ecs.ComponentStorage(items_plugin.Item));
+        storage.* = try ecs.ComponentStorage(items_plugin.Item).init(allocator);
+        try world.registerStorage(items_plugin.Item, items_plugin.COMP_ITEM, storage);
+    }
+    {
+        const storage = try allocator.create(ecs.ComponentStorage(items_plugin.Inventory));
+        storage.* = try ecs.ComponentStorage(items_plugin.Inventory).init(allocator);
+        try world.registerStorage(items_plugin.Inventory, items_plugin.COMP_INVENTORY, storage);
+    }
+    {
+        const storage = try allocator.create(ecs.ComponentStorage(items_plugin.Equipment));
+        storage.* = try ecs.ComponentStorage(items_plugin.Equipment).init(allocator);
+        try world.registerStorage(items_plugin.Equipment, items_plugin.COMP_EQUIPMENT, storage);
     }
 }

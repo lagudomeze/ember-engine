@@ -43,7 +43,8 @@ pub const Entity = packed struct(u64) {
     /// 为 AutoHashMap 提供 hash 上下文
     pub const HashContext = struct {
         pub fn hash(_: @This(), e: Entity) u64 {
-            return std.hash.Wyhash.hash(0, std.mem.asBytes(&e));
+            const val: u64 = @bitCast(e);
+            return val *% 0x9E3779B97F4A7C15;
         }
         pub fn eql(_: @This(), a: Entity, b: Entity) bool {
             return a.eql(b);
