@@ -22,6 +22,7 @@
 //! - '.' 灰色：地板
 
 const std = @import("std");
+const builtin = @import("builtin");
 const ecs = @import("engine/ecs.zig");
 const plugin = @import("engine/plugin_comptime.zig");
 const world_mod = @import("engine/world.zig");
@@ -73,6 +74,9 @@ const GameState = struct {
 
         // 创建 ECS 世界
         var w = try ecs.World.init(allocator);
+
+        // 注册所有组件存储 —— 必须在创建实体之前完成
+        try registerAllStorages(&w, allocator);
 
         // 创建地图
         var map = try world_mod.Map.init(allocator, 12345);
@@ -442,18 +446,21 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
+    // Windows 控制台 UTF-8 支持 —— 避免中文乱码
+    if (builtin.os.tag == .windows) {
+        const SetConsoleOutputCP = @extern(*const fn (u32) callconv(.winapi) i32, .{ .name = "SetConsoleOutputCP", .library_name = "kernel32" });
+        _ = SetConsoleOutputCP(65001);
+    }
+
     std.debug.print("\n========================================\n", .{});
     std.debug.print("  T-Engine Zig — Tales of Maj'Eyal\n", .{});
     std.debug.print("  编译时插件数: {}\n", .{ALL_PLUGINS.len});
     std.debug.print("  系统调度表条目数: {}\n", .{system_table.entries.len});
     std.debug.print("========================================\n\n", .{});
 
-    // 初始化游戏状态
+    // 初始化游戏状态（内部会注册组件存储并创建初始实体）
     var state = try GameState.init(allocator);
     defer state.deinit();
-
-    // 注册所有组件存储到世界
-    try registerAllStorages(&state.world, allocator);
 
     // 主循环
     var running = true;
