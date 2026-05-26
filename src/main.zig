@@ -458,9 +458,15 @@ pub fn main() !void {
     defer state.deinit();
 
     // 主循环
+    std.debug.print("[main] 进入主循环\n", .{});
     var running = true;
     var last_debug_frame: u64 = 0;
+    var verbose_frames: u32 = 5; // 前 5 帧详细日志
     while (running) {
+        if (verbose_frames > 0) {
+            std.debug.print("[f{d}] poll...\n", .{state.renderer.frame_count});
+            verbose_frames -= 1;
+        }
         // 1. 处理输入
         renderer.pollInput(&state.input);
         if (state.input.quit) {

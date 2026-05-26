@@ -219,9 +219,25 @@ pub const Renderer = struct {
 
     pub fn beginFrame(self: *Renderer) void {
         self.frame_count += 1;
-        glClearColor(0.05, 0.05, 0.1, 1.0);
+        // 前 3 帧用鲜红色清屏，用于诊断渲染是否工作
+        if (self.frame_count <= 3) {
+            glClearColor(0.8, 0.1, 0.1, 1.0);
+        } else {
+            glClearColor(0.05, 0.05, 0.1, 1.0);
+        }
         glClear(GL_COLOR_BUFFER_BIT);
         glLoadIdentity();
+
+        // 第一帧：额外绘制一个大白方块确认 GL 工作
+        if (self.frame_count == 1) {
+            glColor3f(1.0, 1.0, 1.0);
+            glBegin(GL_QUADS);
+            glVertex2i(100, 100);
+            glVertex2i(300, 100);
+            glVertex2i(300, 300);
+            glVertex2i(100, 300);
+            glEnd();
+        }
     }
 
     pub fn endFrame(self: *Renderer) void {
@@ -341,9 +357,20 @@ pub fn pollInput(state: *InputState) void {
     }
     while (SDL_PollEvent(&event) != 0) {
         switch (event.type) {
-            SDL_QUIT => state.quit = true,
-            SDL_KEYDOWN => state.keys[event.key.keysym.scancode] = true,
-            else => {},
+            SDL_QUIT => {
+                std.debug.print("[input] SDL_QUIT 事件\n", .{});
+                state.quit = true;
+            },
+            SDL_KEYDOWN => {
+                std.debug.print("[input] SDL_KEYDOWN scancode={d}\n", .{event.key.keysym.scancode});
+                state.keys[event.key.keysym.scancode] = true;
+            },
+            else => {
+                // 输出其他事件类型帮助诊断
+                if (event.type != 0) {
+                    std.debug.print("[input] 事件 type={d}\n", .{event.type});
+                }
+            },
         }
     }
 }
