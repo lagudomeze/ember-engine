@@ -31,6 +31,8 @@ const renderer = @import("engine/renderer.zig");
 // 导入编译时插件
 const firemage_plugin = @import("plugins/core_class_firemage.zig");
 const ai_plugin = @import("plugins/core_ai_hostile.zig");
+const stats_plugin = @import("plugins/core_stats.zig");
+const resources_plugin = @import("plugins/core_resources.zig");
 
 // ============================================================================
 // 编译期插件收集和系统表生成
@@ -40,6 +42,8 @@ const ai_plugin = @import("plugins/core_ai_hostile.zig");
 const ALL_PLUGINS = .{
     firemage_plugin,
     ai_plugin,
+    stats_plugin,
+    resources_plugin,
 };
 
 /// 编译期生成的系统调度表 —— 零运行时开销
@@ -118,6 +122,25 @@ const GameState = struct {
 
         // 标记为玩家
         try w.addComponent(player, firemage_plugin.Player, firemage_plugin.COMP_PLAYER, .{});
+
+        // 添加战斗属性（护甲、抗性等）
+        try w.addComponent(player, stats_plugin.Stats, stats_plugin.COMP_STATS, .{
+            .str = 12,
+            .dex = 14,
+            .con = 13,
+            .mag = 18,
+            .wil = 15,
+            .cun = 14,
+        });
+
+        try w.addComponent(player, stats_plugin.CombatStats, stats_plugin.COMP_COMBAT_STATS, .{});
+
+        // 添加法力资源
+        try w.addComponent(player, resources_plugin.ResourcePool, resources_plugin.COMP_RESOURCE_POOL, resources_plugin.ResourcePool{
+            .kind = .mana,
+            .current = 100,
+            .max = 100,
+        });
 
         // 确保玩家周围区块加载，并在附近生成敌人
         _ = try map.ensureChunk(0, 0);
@@ -449,7 +472,7 @@ pub fn main() !void {
 
     std.debug.print("\n========================================\n", .{});
     std.debug.print("  T-Engine Zig — Tales of Maj'Eyal\n", .{});
-    std.debug.print("  编译时插件数: {}\n", .{ALL_PLUGINS.len});
+    std.debug.print("  编译时插件数: {} (火法师/AI/战斗属性/资源)\n", .{ALL_PLUGINS.len});
     std.debug.print("  系统调度表条目数: {}\n", .{system_table.entries.len});
     std.debug.print("========================================\n\n", .{});
 
@@ -477,6 +500,10 @@ pub fn main() !void {
 
         // 2. 处理玩家输入（回合制：等待玩家行动）
         const action_taken = try handlePlayerInput(&state);
+
+        // 每帧运行持续性系统（资源恢复等）
+        resources_plugin.resourceRegenSystem(&state.world) catch {};
+        stats_plugin.statRecalcSystem(&state.world) catch {};
 
         // 3. 如果玩家执行了动作，运行所有系统
         if (action_taken) {
@@ -575,5 +602,22 @@ fn registerAllStorages(world: *ecs.World, allocator: std.mem.Allocator) !void {
         const storage = try allocator.create(ecs.ComponentStorage(firemage_plugin.Enemy));
         storage.* = try ecs.ComponentStorage(firemage_plugin.Enemy).init(allocator);
         try world.registerStorage(firemage_plugin.Enemy, firemage_plugin.COMP_ENEMY, storage);
+    }
+    // 属性与战斗系统
+    {
+        const storage = try allocator.create(ecs.ComponentStorage(stats_plugin.Stats));
+        storage.* = try ecs.ComponentStorage(stats_plugin.Stats).init(allocator);
+        try world.registerStorage(stats_plugin.Stats, stats_plugin.COMP_STATS, storage);
+    }
+    {
+        const storage = try allocator.create(ecs.ComponentStorage(stats_plugin.CombatStats));
+        storage.* = try ecs.ComponentStorage(stats_plugin.CombatStats).init(allocator);
+        try world.registerStorage(stats_plugin.CombatStats, stats_plugin.COMP_COMBAT_STATS, storage);
+    }
+    // 资源系统
+    {
+        const storage = try allocator.create(ecs.ComponentStorage(resources_plugin.ResourcePool));
+        storage.* = try ecs.ComponentStorage(resources_plugin.ResourcePool).init(allocator);
+        try world.registerStorage(resources_plugin.ResourcePool, resources_plugin.COMP_RESOURCE_POOL, storage);
     }
 }
