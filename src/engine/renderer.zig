@@ -45,6 +45,7 @@ extern "c" fn glBegin(mode: u32) void;
 extern "c" fn glEnd() void;
 extern "c" fn glColor3f(r: f32, g: f32, b: f32) void;
 extern "c" fn glVertex2i(x: i32, y: i32) void;
+extern "c" fn glVertex2f(x: f32, y: f32) void;
 extern "c" fn glGetError() u32;
 extern "c" fn glGetString(name: u32) [*c]const u8;
 
@@ -248,16 +249,15 @@ pub const Renderer = struct {
         SDL_Delay(ms);
     }
 
-    /// 绘制一个地形格 —— 底色 + 字符色块
+    /// 绘制地形格 —— 底色 + 位图字符
     pub fn drawTerrain(self: *const Renderer, wx: i32, wy: i32, bg: Color, ch: u8, fg: Color) void {
         const screen = self.worldToScreen(wx, wy);
         if (screen.sx < -self.tile_size or screen.sx > self.width) return;
         if (screen.sy < -self.tile_size or screen.sy > self.height) return;
 
-        const margin: i32 = 0;
-        const sx = screen.sx + margin;
-        const sy = screen.sy + margin;
-        const sz = self.tile_size - margin * 2;
+        const sx = screen.sx;
+        const sy = screen.sy;
+        const sz = self.tile_size;
 
         // 底色方块
         glColor3f(bg.r, bg.g, bg.b);
@@ -268,32 +268,20 @@ pub const Renderer = struct {
         glVertex2i(sx, sy + sz);
         glEnd();
 
-        // 字符中心标记（占 tile 的 40% 大小的方块）
-        _ = ch;
-        const inset = @divTrunc(sz, 3);
-        const cx = sx + inset;
-        const cy = sy + inset;
-        const csz = sz - inset * 2;
-
-        glColor3f(fg.r, fg.g, fg.b);
-        glBegin(GL_QUADS);
-        glVertex2i(cx, cy);
-        glVertex2i(cx + csz, cy);
-        glVertex2i(cx + csz, cy + csz);
-        glVertex2i(cx, cy + csz);
-        glEnd();
+        // 位图字符叠加
+        drawGlyph(sx + 1, sy + 1, sz - 2, sz - 2, ch, fg);
     }
 
-    /// 绘制实体 —— 填充色块 + 中心高亮标记
-    pub fn drawEntity(self: *const Renderer, wx: i32, wy: i32, color: Color) void {
+    /// 绘制实体 —— 底色 + 字符
+    pub fn drawEntity(self: *const Renderer, wx: i32, wy: i32, color: Color, ch: u8) void {
         const screen = self.worldToScreen(wx, wy);
         if (screen.sx < -self.tile_size or screen.sx > self.width) return;
         if (screen.sy < -self.tile_size or screen.sy > self.height) return;
 
         const sz = self.tile_size;
 
-        // 实体底色（半透明大色块）
-        glColor3f(color.r * 0.3, color.g * 0.3, color.b * 0.3);
+        // 半透明底色
+        glColor3f(color.r * 0.25, color.g * 0.25, color.b * 0.25);
         glBegin(GL_QUADS);
         glVertex2i(screen.sx, screen.sy);
         glVertex2i(screen.sx + sz, screen.sy);
@@ -301,37 +289,117 @@ pub const Renderer = struct {
         glVertex2i(screen.sx, screen.sy + sz);
         glEnd();
 
-        // 实体中心标记（亮色小方块，占 50%）
-        const inset = @divTrunc(sz, 4);
-        const cx = screen.sx + inset;
-        const cy = screen.sy + inset;
-        const csz = sz - inset * 2;
-
-        glColor3f(color.r, color.g, color.b);
-        glBegin(GL_QUADS);
-        glVertex2i(cx, cy);
-        glVertex2i(cx + csz, cy);
-        glVertex2i(cx + csz, cy + csz);
-        glVertex2i(cx, cy + csz);
-        glEnd();
+        // 位图字符
+        drawGlyph(screen.sx + 1, screen.sy + 1, sz - 2, sz - 2, ch, color);
     }
 
-    /// 绘制屏幕文字（调试/UI用）—— 使用矩形近似
+// ============================================================================
+// 位图字体 —— 用 GL_QUADS 渲染 ASCII 字符（不依赖 glBitmap）
+// ============================================================================
+
+/// 8x8 位图字体 —— 每个字符 8 字节，字节的每个 bit 代表一个像素
+const FONT_DATA = blk: {
+    var data: [128][8]u8 = [_][8]u8{[_]u8{0} ** 8} ** 128;
+    // @ (64)
+    data[64] = .{ 0x3C, 0x42, 0x9A, 0xAA, 0x9E, 0x42, 0x3C, 0x00 };
+    // * (42)
+    data[42] = .{ 0x00, 0x22, 0x14, 0x7F, 0x14, 0x22, 0x00, 0x00 };
+    // # (35)
+    data[35] = .{ 0x28, 0x7C, 0x28, 0x7C, 0x28, 0x7C, 0x28, 0x00 };
+    // . (46)
+    data[46] = .{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x30, 0x30, 0x00 };
+    // < (60)
+    data[60] = .{ 0x00, 0x30, 0x18, 0x0C, 0x18, 0x30, 0x00, 0x00 };
+    // > (62)
+    data[62] = .{ 0x00, 0x0C, 0x18, 0x30, 0x18, 0x0C, 0x00, 0x00 };
+    // + (43)
+    data[43] = .{ 0x00, 0x18, 0x18, 0x7E, 0x18, 0x18, 0x00, 0x00 };
+    // ' (39)
+    data[39] = .{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x0C, 0x08, 0x00 };
+    // ~ (126)
+    data[126] = .{ 0x00, 0x00, 0x00, 0x32, 0x4C, 0x00, 0x00, 0x00 };
+    // A-Z
+    data['A'] = .{ 0x18, 0x24, 0x42, 0x7E, 0x42, 0x42, 0x42, 0x00 };
+    data['B'] = .{ 0x7C, 0x42, 0x7C, 0x42, 0x42, 0x7C, 0x00, 0x00 };
+    data['H'] = .{ 0x42, 0x42, 0x7E, 0x42, 0x42, 0x42, 0x42, 0x00 };
+    data['P'] = .{ 0x7C, 0x42, 0x42, 0x7C, 0x40, 0x40, 0x40, 0x00 };
+    data['M'] = .{ 0x42, 0x66, 0x5A, 0x42, 0x42, 0x42, 0x42, 0x00 };
+    data['S'] = .{ 0x3C, 0x40, 0x3C, 0x02, 0x02, 0x3C, 0x00, 0x00 };
+    // 数字 0-9
+    data['0'] = .{ 0x3C, 0x46, 0x4A, 0x52, 0x62, 0x3C, 0x00, 0x00 };
+    data['1'] = .{ 0x18, 0x28, 0x08, 0x08, 0x08, 0x3E, 0x00, 0x00 };
+    data['2'] = .{ 0x3C, 0x42, 0x02, 0x3C, 0x40, 0x7E, 0x00, 0x00 };
+    data['3'] = .{ 0x3C, 0x42, 0x0C, 0x02, 0x42, 0x3C, 0x00, 0x00 };
+    data['4'] = .{ 0x04, 0x0C, 0x14, 0x24, 0x7E, 0x04, 0x00, 0x00 };
+    data['5'] = .{ 0x7E, 0x40, 0x7C, 0x02, 0x42, 0x3C, 0x00, 0x00 };
+    data['6'] = .{ 0x3C, 0x40, 0x7C, 0x42, 0x42, 0x3C, 0x00, 0x00 };
+    data['7'] = .{ 0x7E, 0x02, 0x04, 0x08, 0x10, 0x10, 0x00, 0x00 };
+    data['8'] = .{ 0x3C, 0x42, 0x3C, 0x42, 0x42, 0x3C, 0x00, 0x00 };
+    data['9'] = .{ 0x3C, 0x42, 0x42, 0x3E, 0x02, 0x3C, 0x00, 0x00 };
+    // 冒号、分号、感叹号
+    data[':'] = .{ 0x00, 0x30, 0x30, 0x00, 0x30, 0x30, 0x00, 0x00 };
+    data['!'] = .{ 0x18, 0x18, 0x18, 0x18, 0x00, 0x18, 0x18, 0x00 };
+    data['?'] = .{ 0x3C, 0x42, 0x02, 0x0C, 0x00, 0x18, 0x18, 0x00 };
+    data['/'] = .{ 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x00, 0x00 };
+    data['('] = .{ 0x08, 0x10, 0x20, 0x20, 0x10, 0x08, 0x00, 0x00 };
+    data[')'] = .{ 0x10, 0x08, 0x04, 0x04, 0x08, 0x10, 0x00, 0x00 };
+    data['['] = .{ 0x38, 0x20, 0x20, 0x20, 0x20, 0x38, 0x00, 0x00 };
+    data[']'] = .{ 0x1C, 0x04, 0x04, 0x04, 0x04, 0x1C, 0x00, 0x00 };
+    data['-'] = .{ 0x00, 0x00, 0x00, 0x7E, 0x00, 0x00, 0x00, 0x00 };
+    data['='] = .{ 0x00, 0x00, 0x7E, 0x00, 0x7E, 0x00, 0x00, 0x00 };
+    data[','] = .{ 0x00, 0x00, 0x00, 0x00, 0x30, 0x30, 0x20, 0x00 };
+    break :blk data;
+};
+
+/// 用 GL_QUADS 在位图区域绘制单个 ASCII 字符
+fn drawGlyph(x: i32, y: i32, w: i32, h: i32, ch: u8, color: Color) void {
+    if (ch >= 128) return;
+    const glyph = FONT_DATA[ch];
+    // 检查是否为空字符
+    var any_bit = false;
+    for (glyph) |row| {
+        if (row != 0) { any_bit = true; break; }
+    }
+    if (!any_bit) return;
+
+    glColor3f(color.r, color.g, color.b);
+    glBegin(GL_QUADS);
+
+    const cell_w = @as(f32, @floatFromInt(w)) / 8.0;
+    const cell_h = @as(f32, @floatFromInt(h)) / 8.0;
+
+    for (glyph, 0..) |row, gy| {
+        var row_bits = row;
+        var gx: u32 = 0;
+        while (gx < 8) : (gx += 1) {
+            if (row_bits & 0x80 != 0) {
+                const px = @as(f32, @floatFromInt(x)) + @as(f32, @floatFromInt(gx)) * cell_w;
+                const py = @as(f32, @floatFromInt(y)) + @as(f32, @floatFromInt(gy)) * cell_h;
+                const px2 = px + cell_w;
+                const py2 = py + cell_h;
+                glVertex2f(px, py);
+                glVertex2f(px2, py);
+                glVertex2f(px2, py2);
+                glVertex2f(px, py2);
+            }
+            row_bits <<= 1;
+        }
+    }
+    glEnd();
+}
+
+    /// 绘制屏幕文字（UI/提示信息）—— 使用位图字体
     pub fn drawText(self: *const Renderer, x: i32, y: i32, text: []const u8, color: Color) void {
         _ = self;
-        glColor3f(color.r, color.g, color.b);
+        // 用 10x12 的格子渲染每个字符
+        const char_w: i32 = 9;
+        const char_h: i32 = 12;
         var px = x;
         for (text) |ch| {
             if (ch > ' ') {
-                // 用填充矩形模拟字符
-                glBegin(GL_QUADS);
-                glVertex2i(px, y - 10);
-                glVertex2i(px + 6, y - 10);
-                glVertex2i(px + 6, y);
-                glVertex2i(px, y);
-                glEnd();
+                drawGlyph(px, y - char_h, char_w, char_h, ch, color);
             }
-            px += 8;
+            px += char_w + 1;
         }
     }
 };

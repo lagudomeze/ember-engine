@@ -461,7 +461,7 @@ fn renderGame(state: *GameState) !void {
         // 获取渲染组件
         if (state.world.getComponent(row.entity, firemage_plugin.Renderable, firemage_plugin.COMP_RENDERABLE)) |rend| {
             const color = renderer.Color{ .r = rend.fg_r, .g = rend.fg_g, .b = rend.fg_b, .a = 1.0 };
-            state.renderer.drawEntity(wx, wy, color);
+            state.renderer.drawEntity(wx, wy, color, rend.glyph);
         }
     }
 
