@@ -185,3 +185,65 @@ pub const manifest = plugin.PluginManifest{
     },
     .events = &.{},
 };
+
+// ============================================================================
+// 测试
+// ============================================================================
+
+const testing = @import("std").testing;
+
+test "ResourcePool consume" {
+    var pool = ResourcePool{ .kind = .mana, .current = 100, .max = 100 };
+    try testing.expect(pool.consume(30));
+    try testing.expectEqual(@as(f64, 70), pool.current);
+    try testing.expect(!pool.consume(200)); // 不够
+    try testing.expectEqual(@as(f64, 70), pool.current); // 不变
+}
+
+test "ResourcePool restore" {
+    var pool = ResourcePool{ .kind = .mana, .current = 50, .max = 100 };
+    pool.restore(30);
+    try testing.expectEqual(@as(f64, 80), pool.current);
+    pool.restore(50); // 不超过最大值
+    try testing.expectEqual(@as(f64, 100), pool.current);
+}
+
+test "ResourcePool hasEnough" {
+    var pool = ResourcePool{ .kind = .stamina, .current = 50, .max = 100 };
+    try testing.expect(pool.hasEnough(50));
+    try testing.expect(pool.hasEnough(30));
+    try testing.expect(!pool.hasEnough(51));
+}
+
+test "ResourcePool percent" {
+    var pool = ResourcePool{ .kind = .mana, .current = 75, .max = 100 };
+    try testing.expectEqual(@as(f64, 75.0), pool.percent());
+    pool.current = 0;
+    try testing.expectEqual(@as(f64, 0.0), pool.percent());
+}
+
+test "ResourcePool isEmpty" {
+    var pool = ResourcePool{ .kind = .mana, .current = 0, .max = 100 };
+    try testing.expect(pool.isEmpty());
+    pool.current = 1;
+    try testing.expect(!pool.isEmpty());
+}
+
+test "ResourceKind baseRegen" {
+    try testing.expect(ResourceKind.stamina.baseRegen() > ResourceKind.mana.baseRegen());
+    try testing.expectEqual(ResourceKind.life.baseRegen(), ResourceKind.mana.baseRegen());
+    try testing.expectEqual(@as(f64, 0.0), ResourceKind.vim.baseRegen());
+}
+
+test "resourceRegenSystem restores mana" {
+    const allocator = testing.allocator;
+    var world = @import("../tests.zig").createTestWorld(allocator) catch return error.SkipZigTest;
+    defer world.deinit();
+
+    const e = try world.createEntity();
+    try world.addComponent(e, ResourcePool, COMP_RESOURCE_POOL, .{ .kind = .mana, .current = 50, .max = 100 });
+    try resourceRegenSystem(&world);
+    const pool = findResource(&world, e, .mana);
+    try testing.expect(pool != null);
+    try testing.expect(pool.?.current > 50); // 应该恢复了
+}

@@ -333,3 +333,70 @@ pub const manifest = plugin.PluginManifest{
         plugin.eventEntry("StatChangeEvent", StatChangeEvent),
     },
 };
+
+// ============================================================================
+// 测试
+// ============================================================================
+
+const testing = @import("std").testing;
+
+test "Stats.recalc derived values" {
+    var s = Stats{ .str = 20, .dex = 15, .con = 14, .mag = 25, .wil = 18, .cun = 12 };
+    s.recalc();
+    try testing.expectEqual(@as(i32, 240), s.max_life); // 100 + 14*10
+    try testing.expectEqual(@as(i32, 300), s.max_mana); // 100 + 25*8
+    try testing.expectEqual(@as(i32, 15), s.accuracy); // dex
+    try testing.expectEqual(@as(i32, 40), s.physical_power); // str*2
+    try testing.expectEqual(@as(i32, 50), s.spell_power); // mag*2
+    try testing.expect(s.phys_crit > 3.0); // cun/3 ≈ 4%
+    try testing.expect(s.spell_crit > 2.0); // cun/4 ≈ 3%
+}
+
+test "DamageType resistField" {
+    try testing.expectEqualStrings("physical_resist", DamageType.physical.resistField());
+    try testing.expectEqualStrings("fire_resist", DamageType.fire.resistField());
+    try testing.expectEqualStrings("cold_resist", DamageType.cold.resistField());
+    try testing.expectEqualStrings("arcane_resist", DamageType.arcane.resistField());
+}
+
+test "calculateDamage armor reduction" {
+    var rng = @import("../engine/rng.zig").RNG.init(42);
+    var defender_combat = CombatStats{ .armor = 20, .armor_hardiness = 50.0 };
+    const dmg = calculateDamage(100, .physical, null, null, &defender_combat, &rng);
+    // Armor blocks up to 20*50% = 10, capped at 100*50% = 50
+    // So 10 armor block → expect ~90
+    try testing.expect(dmg >= 80);
+    try testing.expect(dmg <= 100);
+}
+
+test "calculateDamage resist reduction" {
+    var rng = @import("../engine/rng.zig").RNG.init(42);
+    var defender_combat = CombatStats{ .fire_resist = 50 };
+    // 50% fire resist → 100 * 0.5 = 50 (but subject to crit)
+    const dmg = calculateDamage(100, .fire, null, null, &defender_combat, &rng);
+    try testing.expect(dmg >= 30);
+    try testing.expect(dmg <= 100);
+}
+
+test "calculateDamage minimum 1" {
+    var rng = @import("../engine/rng.zig").RNG.init(42);
+    var defender_combat = CombatStats{ .armor = 200, .all_resist = 99 };
+    const dmg = calculateDamage(1, .physical, null, null, &defender_combat, &rng);
+    try testing.expect(dmg >= 1);
+}
+
+test "checkHit bounds" {
+    var rng = @import("../engine/rng.zig").RNG.init(42);
+    // Very low accuracy vs very high defense — still has 5% min chance
+    var hits: u32 = 0;
+    for (0..200) |_| {
+        if (checkHit(0, 1000, &rng)) hits += 1;
+    }
+    try testing.expect(hits < 50); // Should rarely hit
+}
+
+test "CombatStats getResist with all_resist" {
+    var cs = CombatStats{ .all_resist = 10, .fire_resist = 20 };
+    try testing.expectEqual(@as(i32, 30), cs.getResist(.fire));
+    try testing.expectEqual(@as(i32, 10), cs.getResist(.cold)); // only all_resist
+}

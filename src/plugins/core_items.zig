@@ -398,3 +398,129 @@ pub const manifest = plugin.PluginManifest{
         plugin.eventEntry("ItemEquipEvent", ItemEquipEvent),
     },
 };
+
+// ============================================================================
+// 测试
+// ============================================================================
+
+const testing = @import("std").testing;
+
+test "createSword has correct Item component" {
+    var world = try @import("../tests.zig").createTestWorld(testing.allocator);
+    defer world.deinit();
+
+    const sword = try createSword(&world, "测试剑", 10);
+    const item = world.getComponent(sword, Item, COMP_ITEM).?;
+    try testing.expectEqualStrings("测试剑", item.name);
+    try testing.expectEqual(ItemType.weapon, item.type);
+    try testing.expectEqual(EquipSlot.mainhand, item.slot.?);
+    try testing.expectEqual(@as(i32, 10), item.damage_bonus);
+    try testing.expectEqual(@as(i32, 3), item.str_bonus); // 10/3
+}
+
+test "createArmor has correct Item component" {
+    var world = try @import("../tests.zig").createTestWorld(testing.allocator);
+    defer world.deinit();
+
+    const armor = try createArmor(&world, "测试甲", 12);
+    const item = world.getComponent(armor, Item, COMP_ITEM).?;
+    try testing.expectEqual(ItemType.armor, item.type);
+    try testing.expectEqual(EquipSlot.body, item.slot.?);
+    try testing.expectEqual(@as(i32, 12), item.armor_bonus);
+}
+
+test "createRing has correct Item component" {
+    var world = try @import("../tests.zig").createTestWorld(testing.allocator);
+    defer world.deinit();
+
+    const ring = try createRing(&world, "测试戒", 5);
+    const item = world.getComponent(ring, Item, COMP_ITEM).?;
+    try testing.expectEqual(ItemType.ring, item.type);
+    try testing.expectEqual(@as(i32, 5), item.mag_bonus);
+    try testing.expectEqual(@as(i32, 5), item.wil_bonus);
+}
+
+test "Equipment slot get/set" {
+    var equip = Equipment{};
+    const e = ecs.Entity{ .index = 0, .generation = 1 };
+
+    try testing.expect(!equip.getSlot(.mainhand).isAlive());
+    equip.setSlot(.mainhand, e);
+    try testing.expect(equip.getSlot(.mainhand).isAlive());
+    try testing.expect(equip.getSlot(.mainhand).eql(e));
+}
+
+test "equipItem and unequipItem" {
+    var world = try @import("../tests.zig").createTestWorld(testing.allocator);
+    defer world.deinit();
+
+    const entity = try world.createEntity();
+    try world.addComponent(entity, Equipment, COMP_EQUIPMENT, .{});
+    try world.addComponent(entity, Inventory, COMP_INVENTORY, .{});
+    try world.addComponent(entity, stats_mod.Stats, stats_mod.COMP_STATS, .{});
+    try world.addComponent(entity, stats_mod.CombatStats, stats_mod.COMP_COMBAT_STATS, .{});
+
+    const sword = try createSword(&world, "测试剑", 10);
+
+    try equipItem(&world, entity, sword);
+    // 装备后槽位应有物品
+    if (world.getComponent(entity, Equipment, COMP_EQUIPMENT)) |equip| {
+        try testing.expect(equip.getSlot(.mainhand).isAlive());
+    }
+
+    try unequipItem(&world, entity, .mainhand);
+    // 卸下后槽位应为空
+    if (world.getComponent(entity, Equipment, COMP_EQUIPMENT)) |equip| {
+        try testing.expect(!equip.getSlot(.mainhand).isAlive());
+    }
+    // 物品应回到物品栏
+    if (world.getComponent(entity, Inventory, COMP_INVENTORY)) |inv| {
+        try testing.expectEqual(@as(usize, 1), inv.items.items.len);
+    }
+}
+
+test "equipmentRecalcSystem applies bonuses" {
+    var world = try @import("../tests.zig").createTestWorld(testing.allocator);
+    defer world.deinit();
+
+    const entity = try world.createEntity();
+    try world.addComponent(entity, Equipment, COMP_EQUIPMENT, .{});
+    try world.addComponent(entity, stats_mod.Stats, stats_mod.COMP_STATS, .{ .str = 10, .mag = 10 });
+    try world.addComponent(entity, stats_mod.CombatStats, stats_mod.COMP_COMBAT_STATS, .{});
+
+    // 创建并装备 +5 str 的物品
+    const sword = try world.createEntity();
+    try world.addComponent(sword, Item, COMP_ITEM, .{
+        .name = "力量剑",
+        .type = .weapon,
+        .slot = .mainhand,
+        .str_bonus = 5,
+        .mag_bonus = 3,
+        .armor_bonus = 4,
+    });
+
+    if (world.getComponent(entity, Equipment, COMP_EQUIPMENT)) |equip| {
+        equip.setSlot(.mainhand, sword);
+    }
+
+    try equipmentRecalcSystem(&world);
+
+    const stats = world.getComponent(entity, stats_mod.Stats, stats_mod.COMP_STATS).?;
+    try testing.expectEqual(@as(i32, 15), stats.str); // 10 + 5
+    try testing.expectEqual(@as(i32, 13), stats.mag); // 10 + 3
+
+    const combat = world.getComponent(entity, stats_mod.CombatStats, stats_mod.COMP_COMBAT_STATS).?;
+    try testing.expectEqual(@as(i32, 4), combat.armor);
+}
+
+test "Item.isEquippable" {
+    var item = Item{ .slot = .mainhand };
+    try testing.expect(item.isEquippable());
+    item.slot = null;
+    try testing.expect(!item.isEquippable());
+}
+
+test "Item.totalBonus" {
+    var item = Item{ .str_bonus = 3, .mag_bonus = 5, .damage_bonus = 2, .armor_bonus = 4 };
+    try testing.expectEqual(@as(i32, 14), item.totalBonus());
+}

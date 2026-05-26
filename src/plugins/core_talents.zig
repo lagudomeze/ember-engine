@@ -206,8 +206,8 @@ pub fn learnTalent(world: *ecs.World, entity: ecs.Entity, talent_id: u8, level: 
                 return;
             }
         }
-        // 新学
-        try talents.learned.append(world.allocator, .{ .talent_id = talent_id, .level = level });
+        // 新学（最大等级 5）
+        try talents.learned.append(world.allocator, .{ .talent_id = talent_id, .level = @min(5, level) });
     }
 }
 
@@ -358,3 +358,140 @@ pub const manifest = plugin.PluginManifest{
         plugin.eventEntry("TalentUsedEvent", TalentUsedEvent),
     },
 };
+
+// ============================================================================
+// 测试
+// ============================================================================
+
+const testing = @import("std").testing;
+
+/// 创建测试世界，包含一个施法者和一个目标
+fn setupTalentTestWorld() !ecs.World {
+    return setupTalentTestWorldWithTalentLevel(3); // 火球术 Lv3
+}
+
+/// 创建测试世界，指定火球术等级（0=不学）
+fn setupTalentTestWorldWithTalentLevel(fireball_level: u32) !ecs.World {
+    const allocator = testing.allocator;
+    var world = try @import("../tests.zig").createTestWorld(allocator);
+
+    const caster = try world.createEntity();
+    try world.addComponent(caster, TalentComponent, COMP_TALENTS, .{});
+    try world.addComponent(caster, firemage.Position, firemage.COMP_POSITION, .{ .x = 0, .y = 0 });
+    try world.addComponent(caster, firemage.Health, firemage.COMP_HEALTH, .{ .current = 100, .max = 100 });
+    try world.addComponent(caster, firemage.Mana, firemage.COMP_MANA, .{ .current = 100, .max = 100 });
+    try world.addComponent(caster, stats_mod.Stats, stats_mod.COMP_STATS, .{ .mag = 20 });
+    try world.addComponent(caster, stats_mod.CombatStats, stats_mod.COMP_COMBAT_STATS, .{});
+
+    if (fireball_level > 0) {
+        if (world.getComponent(caster, TalentComponent, COMP_TALENTS)) |talents| {
+            try talents.learned.append(world.allocator, .{ .talent_id = 0, .level = fireball_level });
+        }
+    }
+
+    const target = try world.createEntity();
+    try world.addComponent(target, firemage.Position, firemage.COMP_POSITION, .{ .x = 3, .y = 0 });
+    try world.addComponent(target, firemage.Health, firemage.COMP_HEALTH, .{ .current = 50, .max = 50 });
+    try world.addComponent(target, stats_mod.CombatStats, stats_mod.COMP_COMBAT_STATS, .{});
+
+    return world;
+}
+
+test "learnTalent add new talent" {
+    var world = try setupTalentTestWorldWithTalentLevel(0);
+    defer world.deinit();
+    try learnTalent(&world, ecs.Entity{ .index = 0, .generation = 1 }, 0, 1);
+    try testing.expectEqual(@as(u32, 1), getTalentLevel(&world, ecs.Entity{ .index = 0, .generation = 1 }, 0));
+}
+
+test "learnTalent upgrade existing" {
+    var world = try setupTalentTestWorldWithTalentLevel(1);
+    defer world.deinit();
+    try learnTalent(&world, ecs.Entity{ .index = 0, .generation = 1 }, 0, 2);
+    try testing.expectEqual(@as(u32, 3), getTalentLevel(&world, ecs.Entity{ .index = 0, .generation = 1 }, 0));
+    try learnTalent(&world, ecs.Entity{ .index = 0, .generation = 1 }, 0, 3);
+    try testing.expectEqual(@as(u32, 5), getTalentLevel(&world, ecs.Entity{ .index = 0, .generation = 1 }, 0));
+}
+
+test "learnTalent max level 5" {
+    var world = try setupTalentTestWorldWithTalentLevel(0);
+    defer world.deinit();
+    try learnTalent(&world, ecs.Entity{ .index = 0, .generation = 1 }, 0, 10);
+    try testing.expectEqual(@as(u32, 5), getTalentLevel(&world, ecs.Entity{ .index = 0, .generation = 1 }, 0));
+}
+
+test "getTalentLevel not found" {
+    var world = try setupTalentTestWorld();
+    defer world.deinit();
+
+    try testing.expectEqual(@as(u32, 0), getTalentLevel(&world, ecs.Entity{ .index = 0, .generation = 1 }, 99));
+}
+
+test "isOnCooldown after use" {
+    var world = try setupTalentTestWorld();
+    defer world.deinit();
+
+    var rng = @import("../engine/rng.zig").RNG.init(42);
+
+    // 使用有冷却的天赋
+    _ = try useTalent(&world, ecs.Entity{ .index = 0, .generation = 1 }, 0, 3, 0, &rng);
+    try testing.expect(isOnCooldown(&world, ecs.Entity{ .index = 0, .generation = 1 }, 0));
+}
+
+test "useTalent mana fail" {
+    var world = try setupTalentTestWorld();
+    defer world.deinit();
+
+    // 耗尽法力
+    if (world.getComponent(ecs.Entity{ .index = 0, .generation = 1 }, firemage.Mana, firemage.COMP_MANA)) |mana| {
+        mana.current = 0;
+    }
+
+    var rng = @import("../engine/rng.zig").RNG.init(42);
+    try testing.expectEqual(false, try useTalent(&world, ecs.Entity{ .index = 0, .generation = 1 }, 0, 3, 0, &rng));
+}
+
+test "cooldownTickSystem reduces cooldown" {
+    var world = try setupTalentTestWorld();
+    defer world.deinit();
+
+    var rng = @import("../engine/rng.zig").RNG.init(42);
+    _ = try useTalent(&world, ecs.Entity{ .index = 0, .generation = 1 }, 0, 3, 0, &rng);
+
+    // 火球术冷却 3 回合
+    try testing.expect(isOnCooldown(&world, ecs.Entity{ .index = 0, .generation = 1 }, 0));
+
+    // Tick 3 次后冷却结束
+    try cooldownTickSystem(&world);
+    try cooldownTickSystem(&world);
+    try cooldownTickSystem(&world);
+    try testing.expect(!isOnCooldown(&world, ecs.Entity{ .index = 0, .generation = 1 }, 0));
+}
+
+test "TalentDef.calcDamage scaling" {
+    const talent = talent_db[0]; // 火球术
+    const dmg1 = talent.calcDamage(1, 10);
+    const dmg5 = talent.calcDamage(5, 10);
+    // 等级 5 应该比等级 1 伤害高
+    try testing.expect(dmg5 > dmg1);
+}
+
+test "useTalent damages target" {
+    var world = try setupTalentTestWorld();
+    defer world.deinit();
+
+    var rng = @import("../engine/rng.zig").RNG.init(42);
+
+    // 获取目标初始血量
+    const target_health = world.getComponent(ecs.Entity{ .index = 1, .generation = 1 }, firemage.Health, firemage.COMP_HEALTH);
+    const initial_hp = target_health.?.current;
+
+    _ = try useTalent(&world, ecs.Entity{ .index = 0, .generation = 1 }, 0, 3, 0, &rng);
+
+    // 目标血量应该减少
+    try testing.expect(target_health.?.current < initial_hp);
+}
+
+test "talent_db has 4 talents" {
+    try testing.expectEqual(@as(usize, 4), talent_db.len);
+}

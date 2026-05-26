@@ -34,7 +34,7 @@ pub const RNG = struct {
             // 简单但有效的种子混合
             combined ^= s;
             combined = combined *% 0x9E3779B97F4A7C15;
-            combined = std.math.rotl(u64,combined, @intCast(combined & 63));
+            combined = std.math.rotl(u64, combined, @as(u6, @truncate(combined & 63)));
         }
         return init(combined);
     }
@@ -93,7 +93,7 @@ pub const RNG = struct {
     }
 
     /// 从切片中随机选取一个元素
-    pub fn pick(self: *RNG, items: anytype) ?@TypeOf(items[0]) {
+    pub fn pick(self: *RNG, comptime T: type, items: []const T) ?T {
         if (items.len == 0) return null;
         return items[self.range(@intCast(items.len))];
     }
@@ -163,8 +163,88 @@ test "RNG shuffle" {
     var arr = [_]u32{ 1, 2, 3, 4, 5, 6, 7, 8 };
     var r = RNG.init(99);
     r.shuffle(&arr);
-    // 检查所有元素仍然存在（排列不变）
     var sum: u32 = 0;
     for (arr) |v| sum += v;
     try std.testing.expectEqual(@as(u32, 36), sum);
+}
+
+test "RNG rangeInt" {
+    var r = RNG.init(777);
+    for (0..500) |_| {
+        const v = r.rangeInt(-10, 10);
+        try std.testing.expect(v >= -10);
+        try std.testing.expect(v < 10);
+    }
+}
+
+test "RNG float bounds" {
+    var r = RNG.init(333);
+    for (0..500) |_| {
+        const v = r.float();
+        try std.testing.expect(v >= 0.0);
+        try std.testing.expect(v < 1.0);
+    }
+}
+
+test "RNG dice" {
+    var r = RNG.init(111);
+    for (0..200) |_| {
+        const v = r.dice(6);
+        try std.testing.expect(v >= 1);
+        try std.testing.expect(v <= 6);
+    }
+}
+
+test "RNG diceRoll" {
+    var r = RNG.init(222);
+    // 2d6: min=2, max=12
+    for (0..200) |_| {
+        const v = r.diceRoll(2, 6);
+        try std.testing.expect(v >= 2);
+        try std.testing.expect(v <= 12);
+    }
+}
+
+test "RNG chance" {
+    var r = RNG.init(444);
+    // 0% should always be false
+    try std.testing.expect(!r.chance(0.0));
+    // 100% should always be true
+    try std.testing.expect(r.chance(1.0));
+}
+
+test "RNG pick" {
+    var r = RNG.init(555);
+    const items = [_]i32{ 10, 20, 30 };
+    const picked = r.pick(i32, &items);
+    try std.testing.expect(picked != null);
+    try std.testing.expect(picked.? == 10 or picked.? == 20 or picked.? == 30);
+}
+
+test "RNG pick empty" {
+    var r = RNG.init(666);
+    const empty = [_]i32{};
+    try std.testing.expect(r.pick(i32, &empty) == null);
+}
+
+test "RNG normal" {
+    var r = RNG.init(888);
+    var sum: f64 = 0;
+    const n = 1000;
+    for (0..n) |_| {
+        sum += r.normal(50.0, 10.0);
+    }
+    const avg = sum / @as(f64, @floatFromInt(n));
+    // 均值应该接近 50（允许较大误差因为标准差大）
+    try std.testing.expect(avg > 40.0);
+    try std.testing.expect(avg < 60.0);
+}
+
+test "RNG initMulti" {
+    var r1 = RNG.initMulti(&[_]u64{ 123, 456, 789 });
+    var r2 = RNG.initMulti(&[_]u64{ 123, 456, 789 });
+    // 相同种子产生相同序列
+    for (0..50) |_| {
+        try std.testing.expectEqual(r1.next(), r2.next());
+    }
 }

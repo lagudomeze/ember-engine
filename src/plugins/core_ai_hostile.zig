@@ -212,6 +212,85 @@ fn randomWalk(world: *ecs.World, entity: ecs.Entity, current: firemage.Position)
 // 插件清单
 // ============================================================================
 
+// ============================================================================
+// 测试
+// ============================================================================
+
+const testing = @import("std").testing;
+
+fn setupAIWorld() !ecs.World {
+    const world = try @import("../tests.zig").createTestWorld(testing.allocator);
+    return world;
+}
+
+test "AI hostileAISystem runs without crash" {
+    var world = try setupAIWorld();
+    defer world.deinit();
+
+    // 创建玩家
+    const player = try world.createEntity();
+    try world.addComponent(player, firemage.Position, firemage.COMP_POSITION, .{ .x = 5, .y = 5 });
+    try world.addComponent(player, firemage.Player, firemage.COMP_PLAYER, .{});
+    try world.addComponent(player, firemage.Health, firemage.COMP_HEALTH, .{ .current = 100, .max = 100 });
+
+    // 创建敌人（远离玩家）
+    const enemy = try world.createEntity();
+    try world.addComponent(enemy, firemage.Position, firemage.COMP_POSITION, .{ .x = 20, .y = 20 });
+    try world.addComponent(enemy, firemage.Enemy, firemage.COMP_ENEMY, .{ .sight_range = 5 });
+    try world.addComponent(enemy, firemage.Health, firemage.COMP_HEALTH, .{ .current = 30, .max = 30 });
+
+    try hostileAISystem(&world);
+    // 敌人离玩家太远（距离 30），视野只有 5，应该随机闲逛或不动
+    // 仅检查没有崩溃
+}
+
+test "AI enemy approaches player in sight" {
+    var world = try setupAIWorld();
+    defer world.deinit();
+
+    const player = try world.createEntity();
+    try world.addComponent(player, firemage.Position, firemage.COMP_POSITION, .{ .x = 5, .y = 5 });
+    try world.addComponent(player, firemage.Player, firemage.COMP_PLAYER, .{});
+    try world.addComponent(player, firemage.Health, firemage.COMP_HEALTH, .{ .current = 100, .max = 100 });
+
+    // 创建敌人在视野内
+    const enemy = try world.createEntity();
+    try world.addComponent(enemy, firemage.Position, firemage.COMP_POSITION, .{ .x = 8, .y = 5 });
+    try world.addComponent(enemy, firemage.Enemy, firemage.COMP_ENEMY, .{ .sight_range = 6 });
+    try world.addComponent(enemy, firemage.Health, firemage.COMP_HEALTH, .{ .current = 30, .max = 30 });
+
+    try hostileAISystem(&world);
+
+    // 敌人应该向玩家移动（距离 3，在视野 6 内）
+    const enemy_pos = world.getComponent(enemy, firemage.Position, firemage.COMP_POSITION);
+    try testing.expect(enemy_pos != null);
+    // 方位应该向玩家靠近
+    try testing.expect(enemy_pos.?.x >= 7); // 向左（玩家方向）移动一步
+}
+
+test "AI enemy attacks adjacent player" {
+    var world = try setupAIWorld();
+    defer world.deinit();
+
+    const player = try world.createEntity();
+    try world.addComponent(player, firemage.Position, firemage.COMP_POSITION, .{ .x = 5, .y = 5 });
+    try world.addComponent(player, firemage.Player, firemage.COMP_PLAYER, .{});
+    try world.addComponent(player, firemage.Health, firemage.COMP_HEALTH, .{ .current = 100, .max = 100 });
+
+    // 创建敌人紧挨着玩家
+    const enemy = try world.createEntity();
+    try world.addComponent(enemy, firemage.Position, firemage.COMP_POSITION, .{ .x = 6, .y = 5 });
+    try world.addComponent(enemy, firemage.Enemy, firemage.COMP_ENEMY, .{ .sight_range = 6 });
+    try world.addComponent(enemy, firemage.Health, firemage.COMP_HEALTH, .{ .current = 30, .max = 30 });
+
+    try hostileAISystem(&world);
+
+    // 玩家应该受到伤害（敌人近战攻击）
+    const player_hp = world.getComponent(player, firemage.Health, firemage.COMP_HEALTH);
+    try testing.expect(player_hp != null);
+    try testing.expect(player_hp.?.current < 100);
+}
+
 pub const manifest = plugin.PluginManifest{
     .name = "敌对AI系统",
     .version = "1.0.0",

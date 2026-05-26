@@ -100,7 +100,7 @@ pub fn build(b: *std.Build) void {
     // 测试步骤
     // -----------------------------------------------------------------------
     const test_module = b.createModule(.{
-        .root_source_file = b.path("src/engine/ecs.zig"),
+        .root_source_file = b.path("src/tests.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -108,6 +108,6 @@ pub fn build(b: *std.Build) void {
         .root_module = test_module,
     });
     const run_tests = b.addRunArtifact(tests);
-    const test_step = b.step("test", "运行 ECS 核心测试");
+    const test_step = b.step("test", "运行所有单元测试");
     test_step.dependOn(&run_tests.step);
 }

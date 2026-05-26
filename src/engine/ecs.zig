@@ -265,7 +265,6 @@ pub const World = struct {
     free_entities: std.ArrayList(u32) = .empty,
 
     /// 组件存储映射：type_id → 类型擦除的存储指针
-    /// 外部通过 typedStorage(T) 获取带类型的存储
     storages: std.AutoArrayHashMapUnmanaged(u16, *anyopaque) = .empty,
 
     /// 事件队列：每帧收集，帧末分发
@@ -303,17 +302,11 @@ pub const World = struct {
 
     /// 释放世界中的所有资源
     pub fn deinit(self: *Self) void {
-        // 释放事件队列中的事件
         for (self.event_queue.items) |ev| {
             ev.destroy(ev.data, self.allocator);
         }
         self.event_queue.deinit(self.allocator);
 
-        // 释放组件存储
-        for (self.storages.values()) |storage_ptr| {
-            // 存储指针的生命周期由外部管理
-            _ = storage_ptr;
-        }
         self.storages.deinit(self.allocator);
 
         self.entity_generations.deinit(self.allocator);
@@ -556,4 +549,88 @@ test "ComponentStorage remove" {
     try testing.expect(storage.get(e1) == null);
     try testing.expect(storage.get(e2) != null);
     try testing.expect(storage.count() == 1);
+}
+
+test "ComponentStorage has check" {
+    const Pos = struct { x: i32, y: i32 };
+    var storage = try ComponentStorage(Pos).init(testing.allocator);
+    defer storage.deinit(testing.allocator);
+
+    const e = Entity{ .index = 0, .generation = 1 };
+    try testing.expect(!storage.has(e));
+    try storage.insert(testing.allocator, e, .{ .x = 5, .y = 5 });
+    try testing.expect(storage.has(e));
+}
+
+test "ComponentStorage iteration" {
+    const Pos = struct { x: i32, y: i32 };
+    var storage = try ComponentStorage(Pos).init(testing.allocator);
+    defer storage.deinit(testing.allocator);
+
+    try storage.insert(testing.allocator, Entity{ .index = 0, .generation = 1 }, .{ .x = 1, .y = 2 });
+    try storage.insert(testing.allocator, Entity{ .index = 1, .generation = 1 }, .{ .x = 3, .y = 4 });
+
+    var count: usize = 0;
+    var iter = storage.iter();
+    while (iter.next()) |_| {
+        count += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), count);
+}
+
+test "ComponentStorage replace existing" {
+    const Pos = struct { x: i32, y: i32 };
+    var storage = try ComponentStorage(Pos).init(testing.allocator);
+    defer storage.deinit(testing.allocator);
+
+    const e = Entity{ .index = 0, .generation = 1 };
+    try storage.insert(testing.allocator, e, .{ .x = 1, .y = 2 });
+    try storage.insert(testing.allocator, e, .{ .x = 99, .y = 88 });
+    try testing.expectEqual(@as(i32, 99), storage.get(e).?.x);
+    try testing.expectEqual(@as(i32, 88), storage.get(e).?.y);
+    try testing.expect(storage.count() == 1); // 不变
+}
+
+test "World reuse entity slot" {
+    var world = try World.init(testing.allocator);
+    defer world.deinit();
+
+    const e1 = try world.createEntity();
+    world.destroyEntity(e1);
+    const e2 = try world.createEntity();
+    try testing.expectEqual(e1.index, e2.index);
+    try testing.expect(e2.generation == e1.generation + 1);
+}
+
+test "World isAlive check" {
+    var world = try World.init(testing.allocator);
+    defer world.deinit();
+
+    const e = try world.createEntity();
+    try testing.expect(world.isAlive(e));
+    try testing.expect(!world.isAlive(Entity.dead()));
+}
+
+test "World emit and process events" {
+    var world = try World.init(testing.allocator);
+    defer world.deinit();
+
+    const TestEvent = struct {
+        value: i32,
+        pub const event_type_id: u16 = 0;
+    };
+
+    try world.emit(TestEvent, .{ .value = 42 });
+    try testing.expect(world.event_queue.items.len == 1);
+    try testing.expect(world.event_queue.items[0].type_id == 0);
+}
+
+test "World command destroy entity" {
+    var world = try World.init(testing.allocator);
+    defer world.deinit();
+
+    const e = try world.createEntity();
+    try world.pending_commands.append(testing.allocator, .{ .destroy_entity = e });
+    world.processCommands();
+    try testing.expect(!world.isAlive(e));
 }

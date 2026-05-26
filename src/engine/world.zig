@@ -62,7 +62,7 @@ pub const TerrainType = enum(u8) {
             .door_closed => '+',
             .door_open => '\'',
             .shallow_water => '~',
-            .deep_water => '≈',
+            .deep_water => '~',
         };
     }
 };
@@ -365,12 +365,12 @@ pub const Path = struct {
     /// 路径节点序列（从起点到终点的坐标序列）
     nodes: std.ArrayList([2]i32),
 
-    pub fn init(allocator: std.mem.Allocator) Path {
-        return Path{ .nodes = std.ArrayList([2]i32).init(allocator) };
+    pub fn init(_: std.mem.Allocator) Path {
+        return Path{ .nodes = .empty };
     }
 
-    pub fn deinit(self: *Path) void {
-        self.nodes.deinit();
+    pub fn deinit(self: *Path, allocator: std.mem.Allocator) void {
+        self.nodes.deinit(allocator);
     }
 
     /// 获取下一步移动方向（用于 AI 逐步移动）
@@ -384,3 +384,78 @@ pub const Path = struct {
         return null;
     }
 };
+
+// ============================================================================
+// 测试
+// ============================================================================
+
+const testing = @import("std").testing;
+
+test "TerrainType blocks" {
+    try testing.expect(TerrainType.wall.blocksMovement());
+    try testing.expect(TerrainType.wall.blocksSight());
+    try testing.expect(!TerrainType.floor.blocksMovement());
+    try testing.expect(!TerrainType.floor.blocksSight());
+    try testing.expect(TerrainType.door_closed.blocksMovement());
+    try testing.expect(TerrainType.door_closed.blocksSight());
+    try testing.expect(!TerrainType.door_open.blocksMovement());
+}
+
+test "TerrainType glyph" {
+    try testing.expectEqual(@as(u8, '#'), TerrainType.wall.glyph());
+    try testing.expectEqual(@as(u8, '.'), TerrainType.floor.glyph());
+    try testing.expectEqual(@as(u8, '+'), TerrainType.door_closed.glyph());
+}
+
+test "Chunk setTile and getTile" {
+    var chunk = Chunk{ .origin_x = 0, .origin_y = 0 };
+    chunk.setTile(5, 10, .wall);
+    try testing.expectEqual(TerrainType.wall, chunk.getTile(5, 10));
+    try testing.expectEqual(TerrainType.void, chunk.getTile(6, 10));
+    chunk.setTile(5, 10, .floor);
+    try testing.expectEqual(TerrainType.floor, chunk.getTile(5, 10));
+}
+
+test "Map worldToChunk" {
+    const cc = Map.worldToChunk(0, 0);
+    try testing.expectEqual(@as(i32, 0), cc.cx);
+    try testing.expectEqual(@as(i32, 0), cc.cy);
+    const cc2 = Map.worldToChunk(40, -40);
+    try testing.expectEqual(@as(i32, 1), cc2.cx);
+    try testing.expectEqual(@as(i32, -2), cc2.cy);
+}
+
+test "Map chunkKey" {
+    const k1 = Map.chunkKey(0, 0);
+    const k2 = Map.chunkKey(0, 0);
+    const k3 = Map.chunkKey(1, 0);
+    try testing.expectEqual(k1, k2);
+    try testing.expect(k1 != k3);
+}
+
+test "Map create and generate chunk" {
+    var map = try Map.init(testing.allocator, 42);
+    defer map.deinit();
+    const chunk = try map.ensureChunk(0, 0);
+    try testing.expectEqual(TerrainType.wall, chunk.getTile(0, 0));
+}
+
+test "FovData visible and explored" {
+    var fov = try FovData.init(testing.allocator, 8);
+    defer fov.deinit();
+    try testing.expect(!fov.isVisible(3, 3));
+    try fov.visible.put(FovData.packCoord(3, 3), {});
+    try testing.expect(fov.isVisible(3, 3));
+}
+
+test "Path init and nextStep" {
+    var path = Path.init(testing.allocator);
+    defer path.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 0), path.nodes.items.len);
+    try testing.expect(path.nextStep() == null);
+    try path.nodes.append(testing.allocator, .{ 0, 0 });
+    try path.nodes.append(testing.allocator, .{ 0, 1 });
+    const step = path.nextStep().?;
+    try testing.expectEqual(@as(i32, 0), step[0]);
+    try testing.expectEqual(@as(i32, 1), step[1]);
+}

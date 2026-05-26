@@ -404,6 +404,156 @@ pub fn castFireball(
 // ============================================================================
 
 /// 火法师插件清单 —— 在编译期被插件收集器读取
+// ============================================================================
+// 测试
+// ============================================================================
+
+const testing = @import("std").testing;
+
+fn setupFiremageTestWorld() !ecs.World {
+    const allocator = testing.allocator;
+    const world = try @import("../tests.zig").createTestWorld(allocator);
+    return world;
+}
+
+test "Fireball cast creates entity" {
+    var world = try setupFiremageTestWorld();
+    defer world.deinit();
+
+    const caster = try world.createEntity();
+    try world.addComponent(caster, Position, COMP_POSITION, .{ .x = 5, .y = 5 });
+    try world.addComponent(caster, Mana, COMP_MANA, .{ .current = 100, .max = 100 });
+    try world.addComponent(caster, SpellPower, COMP_SPELL_POWER, .{ .value = 20 });
+
+    const initial_entity_count = world.typedStorage(Position, COMP_POSITION).count();
+    try castFireball(&world, caster, 1, 0, 25);
+    // 应该创建了一个新的火球实体
+    try testing.expect(world.typedStorage(Position, COMP_POSITION).count() > initial_entity_count);
+}
+
+test "castFireball mana fail" {
+    var world = try setupFiremageTestWorld();
+    defer world.deinit();
+
+    const caster = try world.createEntity();
+    try world.addComponent(caster, Position, COMP_POSITION, .{ .x = 5, .y = 5 });
+    try world.addComponent(caster, Mana, COMP_MANA, .{ .current = 5, .max = 100 }); // 法力不足
+
+    try testing.expectError(error.NotEnoughMana, castFireball(&world, caster, 1, 0, 25));
+}
+
+test "Fireball impactDamage includes spell power" {
+    const fb = Fireball{ .dir_x = 1, .dir_y = 0, .distance = 0, .max_distance = 8, .damage = 25, .spell_power = 20, .apply_burning = false };
+    try testing.expectEqual(@as(i32, 35), fb.impactDamage()); // 25 + 20/2
+}
+
+test "Burning isExpired" {
+    var burn = Burning{ .damage_per_tick = 5, .remaining_ticks = 3 };
+    try testing.expect(!burn.isExpired());
+    burn.remaining_ticks = 0;
+    try testing.expect(burn.isExpired());
+}
+
+test "Health takeDamage and heal" {
+    var hp = Health{ .current = 50, .max = 100 };
+    hp.takeDamage(20);
+    try testing.expectEqual(@as(i32, 30), hp.current);
+    try testing.expect(!hp.isDead());
+
+    hp.takeDamage(40);
+    try testing.expectEqual(@as(i32, 0), hp.current); // 不会低于 0
+    try testing.expect(hp.isDead());
+
+    hp.heal(50);
+    try testing.expectEqual(@as(i32, 50), hp.current);
+    hp.heal(100);
+    try testing.expectEqual(@as(i32, 100), hp.current); // 不超过 max
+}
+
+test "projectileSystem moves fireball" {
+    var world = try setupFiremageTestWorld();
+    defer world.deinit();
+
+    const fb_entity = try world.createEntity();
+    try world.addComponent(fb_entity, Position, COMP_POSITION, .{ .x = 5, .y = 5 });
+    try world.addComponent(fb_entity, Fireball, COMP_FIREBALL, .{
+        .dir_x = 1, .dir_y = 0, .distance = 0, .max_distance = 8,
+        .damage = 25, .spell_power = 0, .apply_burning = false,
+    });
+    try world.addComponent(fb_entity, Renderable, COMP_RENDERABLE, Renderable.fireball());
+
+    try projectileSystem(&world);
+
+    const pos = world.getComponent(fb_entity, Position, COMP_POSITION).?;
+    try testing.expectEqual(@as(i32, 6), pos.x);
+    try testing.expectEqual(@as(i32, 5), pos.y);
+}
+
+test "projectileSystem destroys at max distance" {
+    var world = try setupFiremageTestWorld();
+    defer world.deinit();
+
+    const fb_entity = try world.createEntity();
+    try world.addComponent(fb_entity, Position, COMP_POSITION, .{ .x = 5, .y = 5 });
+    try world.addComponent(fb_entity, Fireball, COMP_FIREBALL, .{
+        .dir_x = 1, .dir_y = 0, .distance = 8, .max_distance = 8, // 已达最大距离
+        .damage = 25, .spell_power = 0, .apply_burning = false,
+    });
+    try world.addComponent(fb_entity, Renderable, COMP_RENDERABLE, Renderable.fireball());
+
+    try projectileSystem(&world);
+
+    // 火球应被销毁
+    try testing.expect(!world.isAlive(fb_entity));
+}
+
+test "burningSystem applies damage" {
+    var world = try setupFiremageTestWorld();
+    defer world.deinit();
+
+    const entity = try world.createEntity();
+    try world.addComponent(entity, Health, COMP_HEALTH, .{ .current = 100, .max = 100 });
+    try world.addComponent(entity, Burning, COMP_BURNING, .{ .damage_per_tick = 10, .remaining_ticks = 3 });
+
+    try burningSystem(&world);
+
+    const hp = world.getComponent(entity, Health, COMP_HEALTH).?;
+    try testing.expect(hp.current < 100); // 被烧伤了
+    const burn = world.getComponent(entity, Burning, COMP_BURNING).?;
+    try testing.expectEqual(@as(u32, 2), burn.remaining_ticks); // 减少 1 回合
+}
+
+test "burningSystem removes on expire" {
+    var world = try setupFiremageTestWorld();
+    defer world.deinit();
+
+    const entity = try world.createEntity();
+    try world.addComponent(entity, Health, COMP_HEALTH, .{ .current = 100, .max = 100 });
+    try world.addComponent(entity, Burning, COMP_BURNING, .{ .damage_per_tick = 10, .remaining_ticks = 1 });
+
+    try burningSystem(&world);
+
+    // 灼烧状态应该被移除
+    const burn = world.getComponent(entity, Burning, COMP_BURNING);
+    try testing.expect(burn == null);
+}
+
+test "Mana consume and restore" {
+    var mana = Mana{ .current = 100, .max = 100 };
+    try testing.expect(mana.consume(30));
+    try testing.expectEqual(@as(i32, 70), mana.current);
+    try testing.expect(!mana.consume(100));
+    mana.restore(50);
+    try testing.expectEqual(@as(i32, 100), mana.current); // capped at max
+}
+
+test "Renderable player and enemy colors" {
+    const p = Renderable.player();
+    try testing.expectEqual(@as(u8, '@'), p.glyph);
+    const e = Renderable.enemy();
+    try testing.expectEqual(@as(u8, '*'), e.glyph);
+}
+
 pub const manifest = plugin.PluginManifest{
     .name = "火法师职业",
     .version = "1.0.0",
