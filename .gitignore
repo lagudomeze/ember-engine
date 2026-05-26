@@ -6,6 +6,9 @@ zig-out/
 # 旧的 ToME4 代码库
 t-engine4-master/
 
+# 平台依赖（通过 download_deps.sh 下载）
+deps/
+
 # IDE
 .idea/
 .vscode/

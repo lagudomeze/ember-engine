@@ -1,32 +1,24 @@
 //! T-Engine Zig —— 构建脚本
 //!
-//! 此构建脚本负责：
-//! 1. 编译主游戏可执行文件
-//! 2. 链接系统依赖（SDL2、OpenGL）
-//! 3. 支持交叉编译和优化配置
+//! 支持跨平台编译：
+//!   Linux:   zig build
+//!   Windows: zig build -Dtarget=x86_64-windows-gnu
+//!   macOS:   zig build -Dtarget=aarch64-macos
 //!
 //! 使用方法：
-//!   zig build           # 编译（Debug 模式）
-//!   zig build -Doptimize=ReleaseFast  # 编译（发布模式）
-//!   zig build run       # 编译并运行
-//!   zig build test      # 运行所有测试
-//!
-//! 系统依赖要求：
-//!   - SDL2 开发库（libsdl2-dev / SDL2-devel）
-//!   - OpenGL（通常随显卡驱动提供）
-//!   - Zig 0.16.0 或更高版本
+//!   zig build                         # Debug 模式
+//!   zig build -Doptimize=ReleaseFast  # 发布模式
+//!   zig build run                     # 编译并运行
+//!   zig build test                    # 运行测试
 
 const std = @import("std");
 
 pub fn build(b: *std.Build) void {
-    // -----------------------------------------------------------------------
-    // 构建目标与优化选项
-    // -----------------------------------------------------------------------
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
     // -----------------------------------------------------------------------
-    // 主模块：创建编译根模块
+    // 主模块
     // -----------------------------------------------------------------------
     const main_module = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
@@ -38,25 +30,60 @@ pub fn build(b: *std.Build) void {
     // 主可执行文件
     // -----------------------------------------------------------------------
     const exe = b.addExecutable(.{
-        .name = "t-engine-zig",
+        .name = "ember-engine",
         .root_module = main_module,
     });
 
     // -----------------------------------------------------------------------
-    // 链接系统库（在 Zig 0.16 中，链接在 Module 上配置）
+    // 平台相关链接配置
     // -----------------------------------------------------------------------
-    main_module.addLibraryPath(.{ .cwd_relative = "/usr/lib/x86_64-linux-gnu" });
-    main_module.linkSystemLibrary("SDL2", .{ .preferred_link_mode = .dynamic });
-    main_module.linkSystemLibrary("GL", .{ .preferred_link_mode = .dynamic });
-    main_module.link_libc = true;
+    const target_info = target.result;
 
-    // Wasmtime（可选）—— 取消注释以启用 Wasm 插件支持：
-    // exe.linkSystemLibrary("wasmtime");
+    if (target_info.os.tag == .windows) {
+        // Windows: 使用项目内置的 SDL2 开发库
+        // 如果 deps/win 不存在，请先运行 ./download_deps.sh
+        const sdl_root = b.path("deps/win");
+        main_module.addIncludePath(sdl_root.path(b, "include/SDL2"));
+        main_module.addLibraryPath(sdl_root.path(b, "lib"));
+
+        // Windows 上 SDL2 需要这些系统库
+        main_module.linkSystemLibrary("SDL2", .{ .preferred_link_mode = .static });
+        main_module.linkSystemLibrary("opengl32", .{});
+        main_module.linkSystemLibrary("gdi32", .{});
+        main_module.linkSystemLibrary("user32", .{});
+        main_module.linkSystemLibrary("shell32", .{});
+        main_module.linkSystemLibrary("ole32", .{});
+        main_module.linkSystemLibrary("oleaut32", .{});
+        main_module.linkSystemLibrary("winmm", .{});
+        main_module.linkSystemLibrary("version", .{});
+        main_module.linkSystemLibrary("setupapi", .{});
+        main_module.linkSystemLibrary("imm32", .{});
+    } else if (target_info.os.tag == .macos) {
+        // macOS: 使用 Homebrew 或系统提供的 SDL2
+        main_module.linkSystemLibrary("SDL2", .{ .preferred_link_mode = .dynamic });
+        main_module.linkSystemLibrary("GL", .{});
+    } else {
+        // Linux: 使用系统 SDL2
+        main_module.addLibraryPath(.{ .cwd_relative = "/usr/lib/x86_64-linux-gnu" });
+        main_module.linkSystemLibrary("SDL2", .{ .preferred_link_mode = .dynamic });
+        main_module.linkSystemLibrary("GL", .{});
+    }
+
+    main_module.link_libc = true; // SDL2 的 C ABI 需要 C 运行时
 
     // -----------------------------------------------------------------------
     // 安装产物
     // -----------------------------------------------------------------------
     b.installArtifact(exe);
+
+    // 如果是 Windows 目标，同时复制 SDL2.dll 到输出目录
+    if (target_info.os.tag == .windows) {
+        const install_sdl = b.addInstallFile(
+            b.path("deps/win/bin/SDL2.dll"),
+            "bin/SDL2.dll",
+        );
+        b.getInstallStep().dependOn(&install_sdl.step);
+    }
 
     // -----------------------------------------------------------------------
     // 运行步骤
@@ -66,11 +93,11 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| {
         run_cmd.addArgs(args);
     }
-    const run_step = b.step("run", "运行 T-Engine Zig");
+    const run_step = b.step("run", "运行 Ember Engine");
     run_step.dependOn(&run_cmd.step);
 
     // -----------------------------------------------------------------------
-    // 测试步骤：测试 ECS 核心模块
+    // 测试步骤
     // -----------------------------------------------------------------------
     const test_module = b.createModule(.{
         .root_source_file = b.path("src/engine/ecs.zig"),
@@ -83,24 +110,4 @@ pub fn build(b: *std.Build) void {
     const run_tests = b.addRunArtifact(tests);
     const test_step = b.step("test", "运行 ECS 核心测试");
     test_step.dependOn(&run_tests.step);
-
-    // -----------------------------------------------------------------------
-    // Wasm 模块构建（可选）
-    // -----------------------------------------------------------------------
-    // 如需构建 wasm_mod_template.zig 为 .wasm 文件：
-    // const wasm_module = b.createModule(.{
-    //     .root_source_file = b.path("wasm_mod_template.zig"),
-    //     .target = b.resolveTargetQuery(.{
-    //         .cpu_arch = .wasm32,
-    //         .os_tag = .freestanding,
-    //     }),
-    //     .optimize = optimize,
-    // });
-    // const wasm_lib = b.addExecutable(.{
-    //     .name = "example_mod",
-    //     .root_module = wasm_module,
-    // });
-    // wasm_lib.rdynamic = true;
-    // const wasm_step = b.step("wasm", "构建 Wasm 模块示例");
-    // wasm_step.dependOn(&b.addInstallArtifact(wasm_lib).step);
 }
